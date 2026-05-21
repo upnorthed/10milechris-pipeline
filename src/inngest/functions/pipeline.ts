@@ -46,17 +46,24 @@ export const pipeline = inngest.createFunction(
       return data as {
         id: string;
         business_name: string;
-        website: string;
-        place_id: string;
-        lat: number;
-        lng: number;
-        vertical: string;
-        cta_type: string;
-        cta_value: string;
+        website: string | null;
+        place_id: string | null;
+        lat: number | null;
+        lng: number | null;
+        vertical: string | null;
+        cta_type: string | null;
+        cta_value: string | null;
         sender_name: string;
         status: string;
       };
     });
+
+    // Bail if onboarding form hasn't been submitted yet — the Stripe webhook
+    // creates a partial row (status='onboarding') before the customer fills in
+    // their business details. We only run the pipeline on complete records.
+    if (!customer.business_name || !customer.lat || !customer.lng || !customer.place_id) {
+      return { skipped: true, reason: "onboarding incomplete", customer_id };
+    }
 
     // ─── Step 1: Purchase Mailboxes ───────────────────────────────────────────
     const mailboxes = await step.run("purchase-mailboxes", async () => {
@@ -90,11 +97,11 @@ export const pipeline = inngest.createFunction(
     const [recipientRunId, hookRunId] = await step.run(
       "trigger-apify-scrapes",
       async () => {
-        const r = await triggerRecipientScrape(customer.lat, customer.lng);
+        const r = await triggerRecipientScrape(customer.lat!, customer.lng!);
         const h = await triggerHookBankScrape(
-          customer.lat,
-          customer.lng,
-          customer.vertical
+          customer.lat!,
+          customer.lng!,
+          customer.vertical ?? "restaurant"
         );
         return [r, h];
       }
@@ -183,8 +190,16 @@ export const pipeline = inngest.createFunction(
       ];
       const results: EmailArchetype[] = [];
 
+      const customerForPrompt = {
+        ...customer,
+        website: customer.website ?? "",
+        vertical: customer.vertical ?? "restaurant",
+        cta_type: customer.cta_type ?? "url",
+        cta_value: customer.cta_value ?? "",
+      };
+
       for (const archetype of archetypes) {
-        const prompt = buildEmailPrompt(archetype, customer, painPhrases);
+        const prompt = buildEmailPrompt(archetype, customerForPrompt, painPhrases);
         const response = await anthropic.messages.create({
           model: "claude-haiku-4-5-20251001",
           max_tokens: 1024,
@@ -192,7 +207,7 @@ export const pipeline = inngest.createFunction(
         });
         const text =
           response.content[0].type === "text" ? response.content[0].text : "";
-        const parsed = parseEmailResponse(text, archetype, customer);
+        const parsed = parseEmailResponse(text, archetype, customerForPrompt);
         results.push(parsed);
       }
 
@@ -265,7 +280,7 @@ export const pipeline = inngest.createFunction(
               job.businessName,
               job.website,
               job.archetype,
-              customer
+              { business_name: customer.business_name, vertical: customer.vertical ?? "restaurant" }
             );
             const result = await model.generateContent(prompt);
             const text = result.response.text();
@@ -541,9 +556,9 @@ function buildEmailPrompt(
   return `You are writing a cold email for a local restaurant email marketing service called "${customer.sender_name}".
 
 Business context:
-- Sender: ${customer.sender_name} (${customer.website})
-- Vertical: ${customer.vertical}
-- CTA: ${customer.cta_type} → ${customer.cta_value}
+- Sender: ${customer.sender_name} (${customer.website ?? "no website"})
+- Vertical: ${customer.vertical ?? "restaurant"}
+- CTA: ${customer.cta_type ?? "url"} → ${customer.cta_value ?? ""}
 
 Common pain points from low-rated competitor reviews:
 - ${painPhrases}
@@ -582,7 +597,7 @@ function parseEmailResponse(
     subject,
     photo_url: photo,
     bullets: [bullet1, bullet2],
-    cta: customer.cta_value,
+    cta: customer.cta_value ?? "",
     body,
   };
 }
@@ -596,7 +611,7 @@ function buildPersonalizationPrompt(
   return `Personalize this cold email subject line and two bullets for a specific local restaurant.
 
 Recipient: ${recipientName} (${recipientWebsite || "no website"})
-Sender context: ${customer.business_name}, ${customer.vertical} marketing service
+Sender context: ${customer.business_name}, ${customer.vertical ?? "restaurant"} marketing service
 
 Base subject: ${archetype.subject}
 Base bullet 1: ${archetype.bullets[0]}
