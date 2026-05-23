@@ -3,7 +3,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { inngest } from "../client";
 import { getSupabase } from "@/lib/supabase";
 import {
-  purchaseMailboxesAndDomain,
+  getExistingMailboxes,
   createCampaign,
   addMailboxesToCampaign,
   addSequenceToCampaign,
@@ -65,9 +65,9 @@ export const pipeline = inngest.createFunction(
       return { skipped: true, reason: "onboarding incomplete", customer_id };
     }
 
-    // ─── Step 1: Purchase Mailboxes ───────────────────────────────────────────
+    // ─── Step 1: Assign Mailboxes ────────────────────────────────────────────
     const mailboxes = await step.run("purchase-mailboxes", async () => {
-      return purchaseMailboxesAndDomain(customer.business_name);
+      return getExistingMailboxes();
     });
 
     const campaignRow = await step.run("create-campaign-record", async () => {
@@ -77,7 +77,7 @@ export const pipeline = inngest.createFunction(
         .insert({
           customer_id,
           smartlead_campaign_id: null,
-          status: "mailboxes_purchased",
+          status: "mailboxes_assigned",
           sequence_day: 1,
         })
         .select()

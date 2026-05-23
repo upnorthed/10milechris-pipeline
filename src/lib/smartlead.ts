@@ -20,39 +20,28 @@ async function sl<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export interface PurchasedMailboxes {
-  domain: string;
+export interface MailboxPool {
   mailbox_ids: string[];
-  email_accounts: Array<{ id: string; email: string }>;
+  email_accounts: Array<{ id: number; email: string }>;
 }
 
-export async function purchaseMailboxesAndDomain(
-  customerName: string
-): Promise<PurchasedMailboxes> {
-  // 1. Buy a domain
-  const slugBase = customerName
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "")
-    .slice(0, 12);
-  const domain = `${slugBase}${Date.now().toString(36)}.com`;
+// Fetch all active email accounts from Smartlead and return up to 3.
+// Smartlead has no API for purchasing domains — mailboxes must be set up
+// in the Smartlead dashboard first and then assigned here.
+export async function getExistingMailboxes(): Promise<MailboxPool> {
+  const accounts = await sl<Array<{ id: number; email: string; status?: string }>>(
+    "/email-accounts?limit=100&offset=0"
+  );
 
-  const domainRes = await sl<{ domain: string }>("/domains", "POST", {
-    domain,
-    auto_configure_dns: true,
-  });
+  if (!accounts || accounts.length === 0) {
+    throw new Error("No email accounts found in Smartlead. Add mailboxes in the Smartlead dashboard first.");
+  }
 
-  // 2. Purchase 3 SmartSenders (pre-warmed) mailboxes on that domain
-  const mailboxRes = await sl<{
-    email_accounts: Array<{ id: string; email: string }>;
-  }>("/email-accounts/smartsenders", "POST", {
-    domain: domainRes.domain,
-    count: 3,
-  });
-
+  // Take up to 3 active accounts (rotate across customers later)
+  const pool = accounts.slice(0, 3);
   return {
-    domain: domainRes.domain,
-    mailbox_ids: mailboxRes.email_accounts.map((a) => a.id),
-    email_accounts: mailboxRes.email_accounts,
+    mailbox_ids: pool.map((a) => String(a.id)),
+    email_accounts: pool,
   };
 }
 
